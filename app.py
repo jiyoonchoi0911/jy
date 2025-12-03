@@ -35,6 +35,17 @@ st.markdown("""
     .mild-text { color: #f1c40f; font-weight: bold; font-size: 30px; }
     .severe-text { color: #e74c3c; font-weight: bold; font-size: 30px; animation: blink 1s infinite; }
     
+    .advice-box {
+        background-color: #fff9c4;
+        padding: 15px;
+        border-radius: 10px;
+        border-left: 5px solid #fbc02d;
+        font-size: 20px;
+        font-weight: bold;
+        color: #333;
+        margin-top: 10px;
+    }
+
     @keyframes blink {
         50% { opacity: 0.5; }
     }
@@ -48,7 +59,7 @@ st.markdown("""
 st.markdown(get_audio_html(""), unsafe_allow_html=True)
 
 st.title("🐢 AI Posture Correction Pro")
-st.markdown("Turn on the webcam to analyze your posture. **An alarm will sound if 'Severe' posture persists.**")
+st.markdown("Turn on the webcam to analyze your posture. **Follow the guide below to improve your posture.**")
 
 # --- Load Model & MediaPipe ---
 @st.cache_resource
@@ -189,6 +200,7 @@ with col_main:
 with col_sidebar:
     st.markdown("### 📊 Live Status")
     status_ph = st.empty()
+    advice_ph = st.empty()
     
     st.write("---")
     st.markdown("### Posture Score")
@@ -206,13 +218,18 @@ if ctx.state.playing:
             pred = ctx.video_processor.latest_pred
             trigger_sound = ctx.video_processor.trigger_sound
             
-            # 1. Update Status Text
+            # 1. Update Status Text & Advice
             if pred == 'good':
                 status_ph.markdown(f"<div class='good-text'>GOOD 😊</div>", unsafe_allow_html=True)
+                advice_ph.markdown(f"<div class='advice-box'>✅ Perfect alignment! Keep it up.</div>", unsafe_allow_html=True)
+            
             elif pred == 'mild':
                 status_ph.markdown(f"<div class='mild-text'>MILD 😐</div>", unsafe_allow_html=True)
-            else:
+                advice_ph.markdown(f"<div class='advice-box'>💡 Lift your head slightly.<br>Relax your shoulders.</div>", unsafe_allow_html=True)
+            
+            else: # severe
                 status_ph.markdown(f"<div class='severe-text'>SEVERE 🐢</div>", unsafe_allow_html=True)
+                advice_ph.markdown(f"<div class='advice-box'>🚨 <b>Pull chin back!</b><br>Open your chest.</div>", unsafe_allow_html=True)
             
             # 2. Update Single Posture Score Bar (Probability of Good)
             good_score = int(probs.get('good', 0) * 100)
