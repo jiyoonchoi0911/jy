@@ -6,28 +6,32 @@ import av
 import time
 import base64
 import os
+import joblib
+from PIL import Image
 from collections import deque
 from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, WebRtcMode, RTCConfiguration
 
 # --- Page Configuration ---
 st.set_page_config(page_title="AI Posture Correction Pro", page_icon="🐢", layout="wide")
 
+# --- Load AI Model (For Photo Upload) ---
+@st.cache_resource
+def load_model():
+    try:
+        return joblib.load('posture_model.pkl')
+    except:
+        return None
+
+model = load_model()
+
 # --- Audio Handling (File Based) ---
 def get_audio_html(file_path):
-    """
-    Reads a local audio file and returns an HTML string to play it automatically.
-    This avoids using hardcoded base64 strings in the code.
-    """
     if not os.path.exists(file_path):
         return ""
-    
     with open(file_path, "rb") as f:
         data = f.read()
-    
     b64 = base64.b64encode(data).decode()
-    # Unique ID based on time to force browser to re-render audio tag
     unique_id = time.time() 
-    
     return f"""
         <audio autoplay="true" style="display:none;">
             <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
@@ -39,7 +43,6 @@ def get_audio_html(file_path):
 def get_voice_script():
     js_code = """
         <script>
-        // ---- Voice guidance using Web Speech API ----
         window.lastPostureStatus = null;
         function speakPostureStatus(status) {
             if (!('speechSynthesis' in window)) return;
@@ -76,12 +79,12 @@ st.markdown("""
 st.markdown(get_voice_script(), unsafe_allow_html=True)
 
 st.title("🐢 AI Posture Correction Pro")
-st.markdown("**Step 1:** Sit straight. **Step 2:** Click 'Set Standard'. **Step 3:** Keep that posture.")
+st.markdown("**Webcam:** Sit straight & Click 'Set Standard'. **Upload:** Auto-diagnosis using AI.")
 
 mp_pose = mp.solutions.pose
 
-# --- Distance → Probabilities ---
-def distance_to_probs(distance, t_good=0.12, t_mild=0.23):
+# --- Helper: Distance → Probabilities ---
+def distance_to_probs(distance, t_good=0.12, t_mild=0.28):
     d = float(distance)
     good_score = max(0.0, 1.0 - d / max(t_good, 1e-6))
     if d <= t_good: mild_score = d / max(t_good, 1e-6)
@@ -95,7 +98,7 @@ def distance_to_probs(distance, t_good=0.12, t_mild=0.23):
     for k in scores: scores[k] /= total
     return scores
 
-# --- Feature extraction ---
+# --- Helper: Feature extraction ---
 def extract_features_from_landmarks(landmarks, img_shape):
     l_sh = landmarks[11]; r_sh = landmarks[12]
     center_x = (l_sh.x + r_sh.x) / 2.0; center_y = (l_sh.y + r_sh.y) / 2.0
@@ -110,7 +113,20 @@ def extract_features_from_landmarks(landmarks, img_shape):
         px, py = int(lm.x * w), int(lm.y * h); keypoints[idx] = (px, py)
     return features, keypoints
 
-# --- Video Processor ---
+# --- Helper: Draw Visuals ---
+def draw_visuals(img, keypoints, pred):
+    color = (0, 255, 0)
+    if pred == "mild": color = (0, 255, 255)
+    elif pred == "severe": color = (0, 0, 255)
+    
+    for _, (px, py) in keypoints.items(): cv2.circle(img, (px, py), 5, color, -1)
+    if 11 in keypoints and 12 in keypoints: cv2.line(img, keypoints[11], keypoints[12], color, 2)
+    if 0 in keypoints and 11 in keypoints and 12 in keypoints:
+        sh_center = ((keypoints[11][0] + keypoints[12][0]) // 2, (keypoints[11][1] + keypoints[12][1]) // 2)
+        cv2.line(img, sh_center, keypoints[0], color, 2)
+    return img
+
+# --- Video Processor (Webcam) ---
 class VideoProcessor(VideoTransformerBase):
     def __init__(self):
         self.pose = mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5, model_complexity=1)
@@ -142,99 +158,183 @@ class VideoProcessor(VideoTransformerBase):
                     self.latest_distance = 0.0
                     self.latest_probs = {"good": 1.0, "mild": 0.0, "severe": 0.0}
                     self.latest_pred = "good"
-                current_pred = self.latest_pred
-                color = (0, 255, 0)
-                if current_pred == "mild": color = (0, 255, 255)
-                elif current_pred == "severe": color = (0, 0, 255)
-                for _, (px, py) in keypoints.items(): cv2.circle(img, (px, py), 5, color, -1)
-                if 11 in keypoints and 12 in keypoints: cv2.line(img, keypoints[11], keypoints[12], color, 2)
-                if 0 in keypoints and 11 in keypoints and 12 in keypoints:
-                    sh_center = ((keypoints[11][0] + keypoints[12][0]) // 2, (keypoints[11][1] + keypoints[12][1]) // 2)
-                    cv2.line(img, sh_center, keypoints[0], color, 2)
+                
+                # Draw
+                draw_visuals(img, keypoints, self.latest_pred)
+
             except Exception: pass
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-# --- Layout ---
-col_video, col_info = st.columns([3, 2])
-ctx = None
+# --- Layout Structure ---
+col_left, col_right = st.columns([3, 2])
 
-with col_video:
-    st.subheader("Webcam")
-    ctx = webrtc_streamer(
-        key="posture-pro",
-        video_processor_factory=VideoProcessor,
-        mode=WebRtcMode.SENDRECV,
-        rtc_configuration=RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}),
-        media_stream_constraints={"video": True, "audio": False},
-        async_processing=True,
-    )
-    st.markdown("---")
-    calib_msg_ph = st.empty()
-    if st.button("📏 Set Current Posture as Standard", use_container_width=True):
-        if ctx and ctx.video_processor:
-            ctx.video_processor.calibrate_now = True
-            calib_msg_ph.success("✅ Standard posture set!")
-        else: calib_msg_ph.warning("Wait for webcam.")
+# Global variables for display
+display_probs = {"good": 0.0, "mild": 0.0, "severe": 0.0}
+display_pred = "good"
+display_dist = 0.0
+is_severe_sound = False
 
-with col_info:
-    st.markdown("### 📊 Live Status")
-    status_ph = st.empty(); advice_ph = st.empty()
+# --- Left Column: Input (Webcam or Upload) ---
+with col_left:
+    tab1, tab2 = st.tabs(["📹 Live Webcam", "🖼️ Upload Photo"])
+
+    # TAB 1: Webcam
+    with tab1:
+        ctx = webrtc_streamer(
+            key="posture-pro",
+            video_processor_factory=VideoProcessor,
+            mode=WebRtcMode.SENDRECV,
+            rtc_configuration=RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}),
+            media_stream_constraints={"video": True, "audio": False},
+            async_processing=True,
+        )
+        st.markdown("---")
+        # Calibration Button (Next to STOP/Below Video)
+        calib_msg_ph = st.empty()
+        if st.button("📏 Set Current Posture as Standard", use_container_width=True):
+            if ctx and ctx.video_processor:
+                ctx.video_processor.calibrate_now = True
+                calib_msg_ph.success("✅ Standard posture set!")
+            else: calib_msg_ph.warning("Wait for webcam.")
+
+    # TAB 2: Photo Upload
+    with tab2:
+        uploaded_file = st.file_uploader("Upload an image for diagnosis", type=['jpg', 'jpeg', 'png'])
+        if uploaded_file and model:
+            image = Image.open(uploaded_file)
+            img_np = np.array(image.convert('RGB'))
+            h, w, c = img_np.shape
+            
+            # MediaPipe Process
+            with mp_pose.Pose(static_image_mode=True, min_detection_confidence=0.5, model_complexity=1) as pose:
+                results = pose.process(img_np)
+                
+                if results.pose_landmarks:
+                    landmarks = results.pose_landmarks.landmark
+                    features, keypoints = extract_features_from_landmarks(landmarks, img_np.shape)
+                    
+                    # AI Model Prediction (No calibration needed for static image)
+                    probs = model.predict_proba([features])[0]
+                    classes = model.classes_
+                    display_probs = {cls: p for cls, p in zip(classes, probs)}
+                    display_pred = model.predict([features])[0]
+                    
+                    # Draw visual on image
+                    img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+                    img_visual = draw_visuals(img_bgr, keypoints, display_pred)
+                    st.image(cv2.cvtColor(img_visual, cv2.COLOR_BGR2RGB), caption="Analysis Result", use_column_width=True)
+                else:
+                    st.error("⚠️ No person detected in the image.")
+        elif uploaded_file and not model:
+            st.error("❌ Model file (posture_model.pkl) is missing.")
+
+# --- Logic to Sync Webcam Data to Global Variables ---
+if ctx and ctx.state.playing and ctx.video_processor:
+    display_probs = ctx.video_processor.latest_probs
+    display_pred = ctx.video_processor.latest_pred
+    display_dist = ctx.video_processor.latest_distance
+    # Trigger sound only on webcam mode logic
+    if display_pred == "severe":
+        is_severe_sound = True
+
+# --- Right Column: Live Status & Scores (Unified Display) ---
+with col_right:
+    st.markdown("### 📊 Status Report")
+    status_ph = st.empty()
+    advice_ph = st.empty()
     st.markdown("---")
+    
     st.markdown("### Posture Scores")
-    st.write("Good:"); bar_good_ph = st.empty()
-    st.write("Mild:"); bar_mild_ph = st.empty()
-    st.write("Severe:"); bar_severe_ph = st.empty()
-    st.markdown("---"); dist_ph = st.empty()
-    sound_ph = st.empty(); tts_ph = st.empty()
+    st.write("Good:"); bar_good_ph = st.progress(0)
+    st.write("Mild:"); bar_mild_ph = st.progress(0)
+    st.write("Severe:"); bar_severe_ph = st.progress(0)
+    st.markdown("---")
+    
+    dist_ph = st.empty() # For deviation
+    sound_ph = st.empty()
+    tts_ph = st.empty()
 
-# --- Main Loop & Sound Logic ---
+    # Update UI (Shared by both Webcam and Upload)
+    pred = display_pred
+    probs = display_probs
+
+    # 1. Text & Advice
+    if pred == "good":
+        status_ph.markdown("<div class='good-text'>GOOD 😊</div>", unsafe_allow_html=True)
+        advice_ph.markdown("<div class='advice-box'>✅ Perfect! Keep it up.</div>", unsafe_allow_html=True)
+        tts_ph.markdown("<script>updatePostureStatus('GOOD');</script>", unsafe_allow_html=True)
+    elif pred == "mild":
+        status_ph.markdown("<div class='mild-text'>MILD 😐</div>", unsafe_allow_html=True)
+        advice_ph.markdown("<div class='advice-box'>💡 Lift head slightly.<br>Relax shoulders.</div>", unsafe_allow_html=True)
+        tts_ph.markdown("<script>updatePostureStatus('MILD');</script>", unsafe_allow_html=True)
+    else:
+        status_ph.markdown("<div class='severe-text'>SEVERE 🐢</div>", unsafe_allow_html=True)
+        advice_ph.markdown("<div class='advice-box'>🚨 <b>Pull chin back!</b><br>Open chest.</div>", unsafe_allow_html=True)
+        tts_ph.markdown("<script>updatePostureStatus('SEVERE');</script>", unsafe_allow_html=True)
+
+    # 2. Progress Bars
+    g, m, s = probs.get("good", 0.0)*100, probs.get("mild", 0.0)*100, probs.get("severe", 0.0)*100
+    bar_good_ph.progress(int(g), text=f"{g:.1f}%")
+    bar_mild_ph.progress(int(m), text=f"{m:.1f}%")
+    bar_severe_ph.progress(int(s), text=f"{s:.1f}%")
+
+    # 3. Extra Info
+    if ctx and ctx.state.playing:
+        dist_ph.markdown(f"Deviation: **{display_dist:.3f}**")
+    else:
+        dist_ph.empty() # Hide deviation for photo mode
+
+    # 4. Sound Logic (Only for Webcam Loop)
+    SOUND_FILE = "alert.mp3"
+    if ctx and ctx.state.playing:
+        # We need a loop for sound timing, but Streamlit execution model means
+        # this part runs once per re-run.
+        # However, webrtc context runs in background. 
+        # To make sound work reliably in loop, we rely on the main loop below.
+        pass
+
+# --- Main Loop for Sound & Continuous Updates (Webcam Only) ---
 last_sound_time = 0
-SOUND_INTERVAL = 2.0 # Seconds
-SOUND_FILE = "alert.mp3" # Your local sound file name
+SOUND_INTERVAL = 2.0
 
 if ctx and ctx.state.playing:
     while True:
         if not ctx.state.playing: break
+        
+        # Continuous Update from VideoProcessor
         vp = ctx.video_processor
-        if vp is not None:
-            probs = vp.latest_probs; pred = vp.latest_pred; dist = vp.latest_distance
+        if vp:
+            probs = vp.latest_probs
+            pred = vp.latest_pred
+            dist = vp.latest_distance
             
-            # Status
+            # Re-update UI placeholders inside loop for real-time effect
             if pred == "good":
                 status_ph.markdown("<div class='good-text'>GOOD 😊</div>", unsafe_allow_html=True)
                 advice_ph.markdown("<div class='advice-box'>✅ Perfect! Keep it up.</div>", unsafe_allow_html=True)
-                tts_ph.markdown("<script>updatePostureStatus('GOOD');</script>", unsafe_allow_html=True)
             elif pred == "mild":
                 status_ph.markdown("<div class='mild-text'>MILD 😐</div>", unsafe_allow_html=True)
                 advice_ph.markdown("<div class='advice-box'>💡 Lift head slightly.<br>Relax shoulders.</div>", unsafe_allow_html=True)
-                tts_ph.markdown("<script>updatePostureStatus('MILD');</script>", unsafe_allow_html=True)
             else:
                 status_ph.markdown("<div class='severe-text'>SEVERE 🐢</div>", unsafe_allow_html=True)
                 advice_ph.markdown("<div class='advice-box'>🚨 <b>Pull chin back!</b><br>Open chest.</div>", unsafe_allow_html=True)
-                tts_ph.markdown("<script>updatePostureStatus('SEVERE');</script>", unsafe_allow_html=True)
-
-            # Scores
+            
+            # Bars
             g, m, s = probs.get("good", 0.0)*100, probs.get("mild", 0.0)*100, probs.get("severe", 0.0)*100
             bar_good_ph.progress(int(g), text=f"{g:.1f}%")
             bar_mild_ph.progress(int(m), text=f"{m:.1f}%")
             bar_severe_ph.progress(int(s), text=f"{s:.1f}%")
             dist_ph.markdown(f"Deviation: **{dist:.3f}**")
 
-            # --- Sound Logic (Reads 'alert.mp3') ---
+            # Sound
             if pred == "severe":
                 current_time = time.time()
                 if current_time - last_sound_time > SOUND_INTERVAL:
-                    # Check if file exists to prevent errors
                     if os.path.exists(SOUND_FILE):
                         sound_html = get_audio_html(SOUND_FILE)
                         sound_ph.markdown(sound_html, unsafe_allow_html=True)
                         last_sound_time = current_time
-                    else:
-                        # Optional: Alert user if file is missing (only once to avoid spam)
-                        # sound_ph.warning(f"File '{SOUND_FILE}' not found.")
-                        pass
             else:
                 sound_ph.empty()
-
+        
         time.sleep(0.1)
-
