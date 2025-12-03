@@ -180,6 +180,9 @@ with col_left:
 
     # TAB 1: Webcam
     with tab1:
+        # Create a container at the TOP for the button
+        top_controls = st.container()
+
         ctx = webrtc_streamer(
             key="posture-pro",
             video_processor_factory=VideoProcessor,
@@ -188,14 +191,16 @@ with col_left:
             media_stream_constraints={"video": True, "audio": False},
             async_processing=True,
         )
-        st.markdown("---")
-        # Calibration Button (Next to STOP/Below Video)
-        calib_msg_ph = st.empty()
-        if st.button("📏 Set Current Posture as Standard", use_container_width=True):
-            if ctx and ctx.video_processor:
-                ctx.video_processor.calibrate_now = True
-                calib_msg_ph.success("✅ Standard posture set!")
-            else: calib_msg_ph.warning("Wait for webcam.")
+        
+        # Render Button inside Top Container (Above Video)
+        with top_controls:
+            calib_msg_ph = st.empty()
+            if st.button("📏 Set Current Posture as Standard", use_container_width=True, type="primary"):
+                if ctx and ctx.video_processor:
+                    ctx.video_processor.calibrate_now = True
+                    calib_msg_ph.success("✅ Standard posture set!")
+                else: calib_msg_ph.warning("Wait for webcam to start.")
+            st.markdown("---")
 
     # TAB 2: Photo Upload
     with tab2:
