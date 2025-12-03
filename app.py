@@ -1,7 +1,10 @@
-import streamlit as st, cv2, numpy as np, mediapipe as mp, av, time, base64, os, joblib
+import streamlit as st, cv2, numpy as np, mediapipe as mp, av, time, base64, os, joblib, gc
 from PIL import Image
 from collections import deque
 from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, RTCConfiguration
+
+# 1. 메모리 절약을 위한 가비지 컬렉션 강제 실행
+gc.collect()
 
 st.set_page_config(page_title="AI Posture Correction Pro", page_icon="🐢", layout="wide")
 
@@ -44,7 +47,8 @@ def draw(img, kps, p):
 
 class VP(VideoTransformerBase):
     def __init__(self):
-        self.pose=mp_pose.Pose(min_detection_confidence=0.5, model_complexity=1)
+        # 2. 모델 복잡도를 0(Lite)으로 설정하여 메모리 절약 (기본값 1 -> 0)
+        self.pose=mp_pose.Pose(min_detection_confidence=0.5, model_complexity=0)
         self.base=None; self.cal=False; self.hist=deque(maxlen=10)
         self.res={"good":0,"mild":0,"severe":0}; self.pred="good"; self.dist=0
     def recv(self, f):
@@ -66,7 +70,14 @@ with c1:
     t1, t2 = st.tabs(["📹 Live Webcam", "🖼️ Upload Photo"])
     with t1:
         top = st.container()
-        ctx = webrtc_streamer(key="bp", video_processor_factory=VP, rtc_configuration={"iceServers":[{"urls":["stun:stun.l.google.com:19302"]}]}, media_stream_constraints={"video":True,"audio":False}, async_processing=True)
+        # 3. 비디오 해상도를 낮춰 메모리 사용량 감소 (width: ideal 480)
+        ctx = webrtc_streamer(
+            key="bp", 
+            video_processor_factory=VP, 
+            rtc_configuration={"iceServers":[{"urls":["stun:stun.l.google.com:19302"]}]}, 
+            media_stream_constraints={"video":{"width":{"ideal":480}},"audio":False}, 
+            async_processing=True
+        )
         with top:
             if st.button("📏 Set Current Posture as Standard", type="primary", use_container_width=True):
                 if ctx and ctx.video_processor: ctx.video_processor.cal=True; st.success("✅ Set!")
