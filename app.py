@@ -156,8 +156,6 @@ class VideoProcessor(VideoTransformerBase):
         self.latest_probs = {"good": 0.0, "mild": 0.0, "severe": 0.0}
         self.latest_pred = "good"
         self.latest_distance = 0.0
-        self.severe_consecutive_frames = 0
-        self.trigger_sound = False
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
@@ -203,13 +201,6 @@ class VideoProcessor(VideoTransformerBase):
                     sh_center = ((keypoints[11][0] + keypoints[12][0]) // 2, (keypoints[11][1] + keypoints[12][1]) // 2)
                     cv2.line(img, sh_center, keypoints[0], color, 2)
 
-                if current_pred == "severe":
-                    self.severe_consecutive_frames += 1
-                    if self.severe_consecutive_frames > 30:
-                        self.trigger_sound = True
-                else:
-                    self.severe_consecutive_frames = 0
-                    self.trigger_sound = False
             except Exception:
                 pass
         return av.VideoFrame.from_ndarray(img, format="bgr24")
@@ -260,12 +251,16 @@ with col_info:
     st.markdown("---")
     dist_ph = st.empty()
 
-    # Hidden elements
+    # Hidden elements for Sound & Voice
     sound_ph = st.empty()
     tts_ph = st.empty()
 
 
 # --- Main Update Loop ---
+# Sound Timer
+last_sound_time = 0
+SOUND_INTERVAL = 1.5  # Seconds between beeps for SEVERE
+
 if ctx and ctx.state.playing:
     while True:
         if not ctx.state.playing:
@@ -274,10 +269,9 @@ if ctx and ctx.state.playing:
         if vp is not None:
             probs = vp.latest_probs
             pred = vp.latest_pred
-            trigger_sound = vp.trigger_sound
             dist = vp.latest_distance
 
-            # Status Update
+            # Status Update & Voice
             if pred == "good":
                 status_ph.markdown("<div class='good-text'>GOOD 😊</div>", unsafe_allow_html=True)
                 advice_ph.markdown("<div class='advice-box'>✅ Perfect! Keep it up.</div>", unsafe_allow_html=True)
@@ -299,9 +293,17 @@ if ctx and ctx.state.playing:
             
             dist_ph.markdown(f"Deviation: **{dist:.3f}**")
 
-            # Sound
-            if trigger_sound:
-                sound_ph.markdown("<script>playAlert();</script>", unsafe_allow_html=True)
+            # Sound Alert Logic (In Main Loop)
+            if pred == "severe":
+                current_time = time.time()
+                if current_time - last_sound_time > SOUND_INTERVAL:
+                    # Trigger sound
+                    sound_ph.markdown("<script>playAlert();</script>", unsafe_allow_html=True)
+                    last_sound_time = current_time
+                else:
+                    # Clear the placeholder to prevent constant re-triggering if not needed
+                    sound_ph.empty()
             else:
                 sound_ph.empty()
+
         time.sleep(0.1)
