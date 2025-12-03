@@ -81,7 +81,7 @@ st.markdown("**Step 1:** Sit straight. **Step 2:** Click 'Set Standard'. **Step 
 mp_pose = mp.solutions.pose
 
 # --- Distance → Probabilities ---
-def distance_to_probs(distance, t_good=0.12, t_mild=0.28):
+def distance_to_probs(distance, t_good=0.12, t_mild=0.23):
     d = float(distance)
     good_score = max(0.0, 1.0 - d / max(t_good, 1e-6))
     if d <= t_good: mild_score = d / max(t_good, 1e-6)
@@ -237,3 +237,4 @@ if ctx and ctx.state.playing:
                 sound_ph.empty()
 
         time.sleep(0.1)
+
